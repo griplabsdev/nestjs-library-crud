@@ -82,6 +82,23 @@ export function SearchRequestInterceptor(crudOptions: CrudOptions, factoryOption
                       )
                     : [];
 
+            // Extract relations from where conditions
+            const relationsFromWhere = new Set<string>();
+            if (Array.isArray(requestSearchDto.where)) {
+                for (const queryFilter of requestSearchDto.where) {
+                    for (const key of Object.keys(queryFilter)) {
+                        if (key.includes('.')) {
+                            const [relationName] = key.split('.');
+                            relationsFromWhere.add(relationName);
+                        }
+                    }
+                }
+            }
+
+            // Merge relations from where conditions with existing relations
+            const baseRelations = this.getRelations(customSearchRequestOptions);
+            const allRelations = [...new Set([...baseRelations, ...relationsFromWhere])];
+
             const paginationKeys = searchOptions.paginationKeys ?? factoryOption.primaryKeys.map(({ name }) => name);
             const numberOfTake =
                 (pagination.type === 'cursor' ? requestSearchDto.take : pagination.limit) ??
@@ -102,7 +119,7 @@ export function SearchRequestInterceptor(crudOptions: CrudOptions, factoryOption
                 .setTake(numberOfTake)
                 .setOrder(order)
                 .setWithDeleted(withDeleted)
-                .setRelations(this.getRelations(customSearchRequestOptions))
+                .setRelations(allRelations)
                 .setDeserialize(this.deserialize)
                 .generate();
 
@@ -164,8 +181,18 @@ export function SearchRequestInterceptor(crudOptions: CrudOptions, factoryOption
                     throw new UnprocessableEntityException('items of where must be object type');
                 }
                 for (const [key, operation] of Object.entries(queryFilter)) {
-                    if (!factoryOption.columns?.some((column) => column.name === key)) {
-                        throw new UnprocessableEntityException(`where key ${key} is not included in entity's fields`);
+                    // Check if it's a relation field (e.g., "news.title")
+                    const isRelationField = key.includes('.');
+                    if (isRelationField) {
+                        const [relationName] = key.split('.');
+                        if (!factoryOption.relations?.includes(relationName)) {
+                            throw new UnprocessableEntityException(`where key ${key} uses unknown relation ${relationName}`);
+                        }
+                    } else {
+                        // Regular field validation
+                        if (!factoryOption.columns?.some((column) => column.name === key)) {
+                            throw new UnprocessableEntityException(`where key ${key} is not included in entity's fields`);
+                        }
                     }
                     if (typeof operation !== 'object' || operation == null) {
                         throw new UnprocessableEntityException(`where.${key} is not object type`);
@@ -225,21 +252,33 @@ export function SearchRequestInterceptor(crudOptions: CrudOptions, factoryOption
                     }
                 }
 
-                const transformed = plainToInstance(
-                    CreateParamsDto(crudOptions.entity, Object.keys(query) as unknown as Array<keyof EntityType>),
-                    query,
-                );
-                const errorList = await validate(transformed, {
-                    groups: [GROUP.SEARCH],
-                    whitelist: true,
-                    forbidNonWhitelisted: true,
-                    stopAtFirstError: true,
-                    forbidUnknownValues: false,
-                });
+                // Only validate non-relation fields
+                const nonRelationFields = Object.keys(query).filter((key) => !key.includes('.'));
+                if (nonRelationFields.length > 0) {
+                    const queryForValidation = nonRelationFields.reduce(
+                        (acc, key) => {
+                            acc[key] = query[key];
+                            return acc;
+                        },
+                        {} as Record<string, unknown>,
+                    );
 
-                if (errorList.length > 0) {
-                    this.crudLogger.log(errorList, 'ValidationError');
-                    throw new UnprocessableEntityException(errorList);
+                    const transformed = plainToInstance(
+                        CreateParamsDto(crudOptions.entity, nonRelationFields as unknown as Array<keyof EntityType>),
+                        queryForValidation,
+                    );
+                    const errorList = await validate(transformed, {
+                        groups: [GROUP.SEARCH],
+                        whitelist: true,
+                        forbidNonWhitelisted: true,
+                        stopAtFirstError: true,
+                        forbidUnknownValues: false,
+                    });
+
+                    if (errorList.length > 0) {
+                        this.crudLogger.log(errorList, 'ValidationError');
+                        throw new UnprocessableEntityException(errorList);
+                    }
                 }
             }
         }

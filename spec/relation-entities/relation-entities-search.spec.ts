@@ -100,4 +100,75 @@ describe('Relation Entities Search', () => {
             comments: [comment1Body, comment2Body],
         });
     });
+
+    it('should search entity by relation field', async () => {
+        // Create 2 writers with unique names
+        const { body: writer1Body } = await request(app.getHttpServer())
+            .post('/writer')
+            .send({ name: 'relation-test-writer#1' })
+            .expect(HttpStatus.CREATED);
+        const { body: writer2Body } = await request(app.getHttpServer())
+            .post('/writer')
+            .send({ name: 'relation-test-writer#2' })
+            .expect(HttpStatus.CREATED);
+
+        // Create 2 categories with unique names
+        const { body: category1Body } = await request(app.getHttpServer())
+            .post('/category')
+            .send({ name: 'relation-test-Category#1' })
+            .expect(HttpStatus.CREATED);
+        const { body: category2Body } = await request(app.getHttpServer())
+            .post('/category')
+            .send({ name: 'relation-test-Category#2' })
+            .expect(HttpStatus.CREATED);
+
+        // Create questions with unique titles
+        const { body: question1Body } = await request(app.getHttpServer())
+            .post('/question')
+            .send({ categoryId: category1Body.id, writerId: writer1Body.id, title: 'relation-test-Question 1', content: 'Content 1' })
+            .expect(HttpStatus.CREATED);
+        const { body: question2Body } = await request(app.getHttpServer())
+            .post('/question')
+            .send({ categoryId: category2Body.id, writerId: writer2Body.id, title: 'relation-test-Question 2', content: 'Content 2' })
+            .expect(HttpStatus.CREATED);
+
+        // Search by category name (relation field)
+        const { body: searchByCategoryResponse } = await request(app.getHttpServer())
+            .post('/question/search')
+            .send({
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                where: [{ 'category.name': { operator: 'LIKE', operand: 'relation-test-Category#1' } }],
+            })
+            .expect(HttpStatus.OK);
+
+        expect(searchByCategoryResponse.data.length).toBeGreaterThanOrEqual(1);
+        expect(searchByCategoryResponse.data.some((q: { id: number }) => q.id === question1Body.id)).toBe(true);
+
+        // Search by writer name (relation field)
+        const { body: searchByWriterResponse } = await request(app.getHttpServer())
+            .post('/question/search')
+            .send({
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                where: [{ 'writer.name': { operator: 'LIKE', operand: 'relation-test-writer#2' } }],
+            })
+            .expect(HttpStatus.OK);
+
+        expect(searchByWriterResponse.data.length).toBeGreaterThanOrEqual(1);
+        expect(searchByWriterResponse.data.some((q: { id: number }) => q.id === question2Body.id)).toBe(true);
+
+        // Search with multiple conditions including relation field
+        const { body: searchMultipleResponse } = await request(app.getHttpServer())
+            .post('/question/search')
+            .send({
+                where: [
+                    // eslint-disable-next-line @typescript-eslint/naming-convention
+                    { 'category.name': { operator: '=', operand: 'relation-test-Category#1' } },
+                    { title: { operator: 'LIKE', operand: 'relation-test-Question 1' } },
+                ],
+            })
+            .expect(HttpStatus.OK);
+
+        expect(searchMultipleResponse.data.length).toBeGreaterThanOrEqual(1);
+        expect(searchMultipleResponse.data.some((q: { id: number }) => q.id === question1Body.id)).toBe(true);
+    });
 });

@@ -23,8 +23,20 @@ export class TypeOrmQueryBuilderHelper {
         }
         const findOptionsWhere: Record<string, unknown> = {};
         for (const [field, operation] of Object.entries(filter)) {
+            // Check if it's a relation field (e.g., "news.title")
+            const isRelationField = field.includes('.');
+            let targetField: string;
+            let relationName: string | undefined;
+
+            if (isRelationField) {
+                [relationName, targetField] = field.split('.');
+            } else {
+                targetField = field;
+            }
+
+            let fieldValue: unknown;
             if (operation.operator === operatorNull) {
-                findOptionsWhere[field] = IsNull();
+                fieldValue = IsNull();
             }
 
             if ('operand' in operation) {
@@ -32,55 +44,65 @@ export class TypeOrmQueryBuilderHelper {
                 const { operator, operand } = operation;
                 switch (operator) {
                     case '=':
-                        findOptionsWhere[field] = operand;
+                        fieldValue = operand;
                         break;
                     case '!=':
-                        findOptionsWhere[field] = Not(operand);
+                        fieldValue = Not(operand);
                         break;
                     case '>':
-                        findOptionsWhere[field] = MoreThan(operand);
+                        fieldValue = MoreThan(operand);
                         break;
                     case '>=':
-                        findOptionsWhere[field] = MoreThanOrEqual(operand);
+                        fieldValue = MoreThanOrEqual(operand);
                         break;
                     case '<':
-                        findOptionsWhere[field] = LessThan(operand);
+                        fieldValue = LessThan(operand);
                         break;
                     case '<=':
-                        findOptionsWhere[field] = LessThanOrEqual(operand);
+                        fieldValue = LessThanOrEqual(operand);
                         break;
                     case 'LIKE':
-                        findOptionsWhere[field] = Like(operand);
+                        fieldValue = Like(operand);
                         break;
                     case 'ILIKE':
-                        findOptionsWhere[field] = ILike(operand);
+                        fieldValue = ILike(operand);
                         break;
                     case '?':
-                        findOptionsWhere[field] = Raw((alias) => `${alias} ? :${paramName}`, {
+                        fieldValue = Raw((alias) => `${alias} ? :${paramName}`, {
                             [paramName]: operand,
                         });
                         break;
                     case '@>':
-                        findOptionsWhere[field] = Raw((alias) => `${alias} @> :${paramName}`, {
+                        fieldValue = Raw((alias) => `${alias} @> :${paramName}`, {
                             [paramName]: operand,
                         });
                         break;
                     case 'JSON_CONTAINS':
-                        findOptionsWhere[field] = Raw((alias) => `JSON_CONTAINS (${alias}, :${paramName})`, {
+                        fieldValue = Raw((alias) => `JSON_CONTAINS (${alias}, :${paramName})`, {
                             [paramName]: operand,
                         });
                         break;
                     case operatorBetween:
-                        findOptionsWhere[field] = Between(operand[0], operand[1]);
+                        fieldValue = Between(operand[0], operand[1]);
                         break;
                     case operatorIn:
-                        findOptionsWhere[field] = In(operand);
+                        fieldValue = In(operand);
                         break;
                 }
             }
 
-            if (findOptionsWhere[field] && 'not' in operation && operation.not) {
-                findOptionsWhere[field] = Not(findOptionsWhere[field]);
+            if (fieldValue && 'not' in operation && operation.not) {
+                fieldValue = Not(fieldValue);
+            }
+
+            // Handle relation fields by creating nested structure
+            if (isRelationField && fieldValue !== undefined && relationName) {
+                if (!findOptionsWhere[relationName]) {
+                    findOptionsWhere[relationName] = {};
+                }
+                (findOptionsWhere[relationName] as Record<string, unknown>)[targetField] = fieldValue;
+            } else if (fieldValue !== undefined) {
+                findOptionsWhere[field] = fieldValue;
             }
         }
 
