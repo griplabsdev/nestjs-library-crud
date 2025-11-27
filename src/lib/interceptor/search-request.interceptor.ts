@@ -20,7 +20,7 @@ import type { OperatorUnion } from '../interface/query-operation.interface';
 import type { CallHandler, ExecutionContext, NestInterceptor } from '@nestjs/common';
 import type { Request } from 'express';
 import type { Observable } from 'rxjs';
-import type { FindOptionsWhere, FindOperator } from 'typeorm';
+import type { FindOptionsWhere, FindOptionsOrder, FindOptionsSelect, FindOperator } from 'typeorm';
 
 const method = Method.SEARCH;
 // eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
@@ -82,30 +82,110 @@ export function SearchRequestInterceptor(crudOptions: CrudOptions, factoryOption
                       )
                     : [];
 
-            // Extract relations from where conditions
-            const relationsFromWhere = new Set<string>();
+            // Extract relations from where/select/order conditions
+            const relationsFromConditions = new Set<string>();
+
+            // From where conditions
             if (Array.isArray(requestSearchDto.where)) {
                 for (const queryFilter of requestSearchDto.where) {
                     for (const key of Object.keys(queryFilter)) {
                         if (key.includes('.')) {
                             const [relationName] = key.split('.');
-                            relationsFromWhere.add(relationName);
+                            relationsFromConditions.add(relationName);
                         }
                     }
                 }
             }
 
-            // Merge relations from where conditions with existing relations
+            // From select (array format: ["id", "user.id"])
+            if (Array.isArray(requestSearchDto.select)) {
+                for (const field of requestSearchDto.select) {
+                    const fieldStr = String(field);
+                    if (fieldStr.includes('.')) {
+                        const [relationName] = fieldStr.split('.');
+                        relationsFromConditions.add(relationName);
+                    }
+                }
+            }
+
+            // From order
+            if (requestSearchDto.order) {
+                for (const key of Object.keys(requestSearchDto.order)) {
+                    if (key.includes('.')) {
+                        const [relationName] = key.split('.');
+                        relationsFromConditions.add(relationName);
+                    }
+                }
+            }
+
+            // Merge relations from where/select/order conditions with existing relations
             const baseRelations = this.getRelations(customSearchRequestOptions);
-            const allRelations = [...new Set([...baseRelations, ...relationsFromWhere])];
+            const allRelations = [...new Set([...baseRelations, ...relationsFromConditions])];
 
             const paginationKeys = searchOptions.paginationKeys ?? factoryOption.primaryKeys.map(({ name }) => name);
             const numberOfTake =
                 (pagination.type === 'cursor' ? requestSearchDto.take : pagination.limit) ??
                 searchOptions.numberOfTake ??
                 CRUD_POLICY[method].default.numberOfTake;
-            const order =
-                requestSearchDto.order ?? paginationKeys.reduce((acc, key) => ({ ...acc, [key]: CRUD_POLICY[method].default.sort }), {});
+
+            // Convert order with relation fields to TypeORM nested format
+            const convertOrder = (
+                orderInput: Record<string, Sort | `${Sort}`> | undefined,
+            ): FindOptionsOrder<typeof crudOptions.entity> => {
+                if (!orderInput) {
+                    return paginationKeys.reduce(
+                        (acc, key) => ({ ...acc, [key]: CRUD_POLICY[method].default.sort }),
+                        {},
+                    ) as FindOptionsOrder<typeof crudOptions.entity>;
+                }
+
+                const convertedOrder: Record<string, unknown> = {};
+                for (const [key, sort] of Object.entries(orderInput)) {
+                    if (key.includes('.')) {
+                        // Relation field (e.g., "category.name")
+                        const [relationName, fieldName] = key.split('.');
+                        if (!convertedOrder[relationName]) {
+                            convertedOrder[relationName] = {};
+                        }
+                        (convertedOrder[relationName] as Record<string, unknown>)[fieldName] = sort;
+                    } else {
+                        // Regular field
+                        convertedOrder[key] = sort;
+                    }
+                }
+                return convertedOrder as FindOptionsOrder<typeof crudOptions.entity>;
+            };
+
+            const order = convertOrder(requestSearchDto.order);
+
+            // Convert select array to TypeORM FindOptionsSelect format
+            // Input: ["id", "user.id"] -> Output: { id: true, user: { id: true } }
+            const convertSelect = (
+                selectInput: Array<string | number> | undefined,
+            ): FindOptionsSelect<typeof crudOptions.entity> | undefined => {
+                if (!selectInput || selectInput.length === 0) {
+                    return undefined;
+                }
+
+                const convertedSelect: Record<string, unknown> = {};
+                for (const field of selectInput) {
+                    const fieldStr = String(field);
+                    if (fieldStr.includes('.')) {
+                        // Relation field (e.g., "user.id")
+                        const [relationName, fieldName] = fieldStr.split('.');
+                        if (!convertedSelect[relationName]) {
+                            convertedSelect[relationName] = {};
+                        }
+                        (convertedSelect[relationName] as Record<string, unknown>)[fieldName] = true;
+                    } else {
+                        // Regular field
+                        convertedSelect[fieldStr] = true;
+                    }
+                }
+                return convertedSelect as FindOptionsSelect<typeof crudOptions.entity>;
+            };
+
+            const select = convertSelect(Array.isArray(requestSearchDto.select) ? requestSearchDto.select : undefined);
 
             const withDeleted =
                 requestSearchDto.withDeleted ?? crudOptions.routes?.[method]?.softDelete ?? CRUD_POLICY[method].default.softDeleted;
@@ -113,7 +193,7 @@ export function SearchRequestInterceptor(crudOptions: CrudOptions, factoryOption
             const crudReadManyRequest: CrudReadManyRequest<typeof crudOptions.entity> = new CrudReadManyRequest<typeof crudOptions.entity>()
                 .setPaginationKeys(paginationKeys)
                 .setPagination(pagination)
-                .setSelectColumn(requestSearchDto.select)
+                .setSelect(select)
                 .setExcludeColumn(searchOptions.exclude)
                 .setWhere(where)
                 .setTake(numberOfTake)
@@ -162,10 +242,32 @@ export function SearchRequestInterceptor(crudOptions: CrudOptions, factoryOption
         }
 
         validateSelect(select: RequestSearchDto<typeof crudOptions.entity>['select']): void {
+            if (!select) {
+                return;
+            }
+
             if (!Array.isArray(select)) {
                 throw new UnprocessableEntityException('select must be array type');
             }
-            const differenceKeys = _.difference(select, factoryOption.columns?.map((column) => column.name) ?? []);
+
+            const entityColumns = factoryOption.columns?.map((column) => column.name) ?? [];
+            const regularFields: string[] = [];
+
+            for (const field of select) {
+                const fieldStr = String(field);
+                if (fieldStr.includes('.')) {
+                    // Relation field (e.g., "category.name")
+                    const [relationName] = fieldStr.split('.');
+                    if (!factoryOption.relations?.includes(relationName)) {
+                        throw new UnprocessableEntityException(`select key ${fieldStr} uses unknown relation ${relationName}`);
+                    }
+                } else {
+                    // Regular field
+                    regularFields.push(fieldStr);
+                }
+            }
+
+            const differenceKeys = _.difference(regularFields, entityColumns);
             if (differenceKeys.length > 0) {
                 throw new UnprocessableEntityException(`select key ${differenceKeys.toLocaleString()} is not included in entity fields`);
             }
@@ -289,10 +391,22 @@ export function SearchRequestInterceptor(crudOptions: CrudOptions, factoryOption
             }
 
             const sortOptions = Object.values(Sort);
+            const entityColumns = factoryOption.columns?.map((column) => column.name) ?? [];
+
             for (const [key, sort] of Object.entries(order)) {
-                if (!factoryOption.columns?.some((column) => column.name === key)) {
-                    throw new UnprocessableEntityException(`order key ${key} is not included in entity's fields`);
+                if (key.includes('.')) {
+                    // Relation field (e.g., "category.name")
+                    const [relationName] = key.split('.');
+                    if (!factoryOption.relations?.includes(relationName)) {
+                        throw new UnprocessableEntityException(`order key ${key} uses unknown relation ${relationName}`);
+                    }
+                } else {
+                    // Regular field
+                    if (!entityColumns.includes(key)) {
+                        throw new UnprocessableEntityException(`order key ${key} is not included in entity's fields`);
+                    }
                 }
+
                 if (!sortOptions.includes(sort as Sort)) {
                     throw new UnprocessableEntityException(`order type ${sort} is not supported`);
                 }

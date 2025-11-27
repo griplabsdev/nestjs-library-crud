@@ -46,6 +46,34 @@ export class CrudReadManyRequest<T> {
     }
 
     excludedColumns(columns: string[]): this {
+        // If select is already set as an object (FindOptionsSelect), don't override it
+        if (this._findOptions.select && typeof this._findOptions.select === 'object' && !Array.isArray(this._findOptions.select)) {
+            // Filter out excluded columns from the existing select object
+            const selectObj = this._findOptions.select as Record<string, unknown>;
+            const filteredSelect: Record<string, unknown> = {};
+            for (const [key, value] of Object.entries(selectObj)) {
+                if (!this._excludeColumnSet.has(key)) {
+                    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+                        // This is a relation, recursively filter it
+                        const filteredRelation: Record<string, unknown> = {};
+                        for (const [relKey, relValue] of Object.entries(value as Record<string, unknown>)) {
+                            if (!this._excludeColumnSet.has(relKey)) {
+                                filteredRelation[relKey] = relValue;
+                            }
+                        }
+                        if (Object.keys(filteredRelation).length > 0) {
+                            filteredSelect[key] = filteredRelation;
+                        }
+                    } else {
+                        filteredSelect[key] = value;
+                    }
+                }
+            }
+            this._findOptions.select = filteredSelect as FindOptionsSelect<T>;
+            return this;
+        }
+
+        // Original array-based logic
         this._findOptions.select = columns.filter((column) => {
             if (this._excludeColumnSet.has(column)) {
                 return false;
@@ -79,6 +107,13 @@ export class CrudReadManyRequest<T> {
         }
         for (const column of columns) {
             this._selectColumnSet.add(column);
+        }
+        return this;
+    }
+
+    setSelect(select: FindOptionsSelect<T> | undefined): this {
+        if (select) {
+            this._findOptions.select = select;
         }
         return this;
     }

@@ -171,4 +171,111 @@ describe('Relation Entities Search', () => {
         expect(searchMultipleResponse.data.length).toBeGreaterThanOrEqual(1);
         expect(searchMultipleResponse.data.some((q: { id: number }) => q.id === question1Body.id)).toBe(true);
     });
+
+    it('should search with order using relation fields', async () => {
+        // Create writers
+        const { body: writer1Body } = await request(app.getHttpServer())
+            .post('/writer')
+            .send({ name: 'order-test-writer#1' })
+            .expect(HttpStatus.CREATED);
+        const { body: writer2Body } = await request(app.getHttpServer())
+            .post('/writer')
+            .send({ name: 'order-test-writer#2' })
+            .expect(HttpStatus.CREATED);
+
+        // Create categories
+        const { body: category1Body } = await request(app.getHttpServer())
+            .post('/category')
+            .send({ name: 'order-test-Category#A' })
+            .expect(HttpStatus.CREATED);
+        const { body: category2Body } = await request(app.getHttpServer())
+            .post('/category')
+            .send({ name: 'order-test-Category#B' })
+            .expect(HttpStatus.CREATED);
+
+        // Create questions
+        await request(app.getHttpServer())
+            .post('/question')
+            .send({ categoryId: category1Body.id, writerId: writer1Body.id, title: 'order-test-Question 1', content: 'Content 1' })
+            .expect(HttpStatus.CREATED);
+        await request(app.getHttpServer())
+            .post('/question')
+            .send({ categoryId: category2Body.id, writerId: writer2Body.id, title: 'order-test-Question 2', content: 'Content 2' })
+            .expect(HttpStatus.CREATED);
+
+        // Search with order using relation fields (ASC)
+        const { body: searchWithOrderAscResponse } = await request(app.getHttpServer())
+            .post('/question/search')
+            .send({
+                where: [{ title: { operator: 'LIKE', operand: 'order-test-Question%' } }],
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                order: { 'category.name': 'ASC' },
+            })
+            .expect(HttpStatus.OK);
+
+        expect(searchWithOrderAscResponse.data.length).toBeGreaterThanOrEqual(2);
+        // Verify results are ordered by category name (ASC)
+        const categoryNamesAsc = searchWithOrderAscResponse.data.map((q: { category: { name: string } }) => q.category.name);
+        const sortedCategoryNamesAsc = [...categoryNamesAsc].sort();
+        expect(categoryNamesAsc).toEqual(sortedCategoryNamesAsc);
+
+        // Search with order using relation fields (DESC)
+        const { body: searchWithOrderDescResponse } = await request(app.getHttpServer())
+            .post('/question/search')
+            .send({
+                where: [{ title: { operator: 'LIKE', operand: 'order-test-Question%' } }],
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                order: { 'category.name': 'DESC' },
+            })
+            .expect(HttpStatus.OK);
+
+        expect(searchWithOrderDescResponse.data.length).toBeGreaterThanOrEqual(2);
+        // Verify results are ordered by category name (DESC)
+        const categoryNamesDesc = searchWithOrderDescResponse.data.map((q: { category: { name: string } }) => q.category.name);
+        const sortedCategoryNamesDesc = [...categoryNamesDesc].sort().reverse();
+        expect(categoryNamesDesc).toEqual(sortedCategoryNamesDesc);
+    });
+
+    it('should search with select using array format (converted to object format internally)', async () => {
+        // Create writer
+        const { body: writerBody } = await request(app.getHttpServer())
+            .post('/writer')
+            .send({ name: 'select-array-test-writer' })
+            .expect(HttpStatus.CREATED);
+
+        // Create category
+        const { body: categoryBody } = await request(app.getHttpServer())
+            .post('/category')
+            .send({ name: 'select-array-test-Category' })
+            .expect(HttpStatus.CREATED);
+
+        // Create question
+        const { body: questionBody } = await request(app.getHttpServer())
+            .post('/question')
+            .send({ categoryId: categoryBody.id, writerId: writerBody.id, title: 'select-array-test-Question', content: 'Content' })
+            .expect(HttpStatus.CREATED);
+
+        // Search with select using array format (will be converted to { id: true, title: true, category: { id: true, name: true }, writer: { id: true, name: true } } internally)
+        const { body: searchResponse } = await request(app.getHttpServer())
+            .post('/question/search')
+            .send({
+                where: [{ title: { operator: 'LIKE', operand: 'select-array-test-Question' } }],
+                select: ['id', 'title', 'category.id', 'category.name', 'writer.id', 'writer.name'],
+            })
+            .expect(HttpStatus.OK);
+
+        expect(searchResponse.data.length).toBeGreaterThanOrEqual(1);
+        const question = searchResponse.data.find((q: { id: number }) => q.id === questionBody.id);
+        expect(question).toBeDefined();
+        expect(question).toHaveProperty('id');
+        expect(question).toHaveProperty('title');
+        expect(question).toHaveProperty('category');
+        expect(question.category).toHaveProperty('id');
+        expect(question.category).toHaveProperty('name');
+        expect(question).toHaveProperty('writer');
+        expect(question.writer).toHaveProperty('id');
+        expect(question.writer).toHaveProperty('name');
+        // Should not have content field (because it's not in select)
+        expect(question).not.toHaveProperty('content');
+    });
 });
