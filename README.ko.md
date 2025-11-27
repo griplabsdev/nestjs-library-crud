@@ -246,6 +246,296 @@ interface SearchOptions {
 }
 ```
 
+---
+
+## Search API 상세 가이드
+
+`POST /users/search` 엔드포인트는 복잡한 검색 조건을 사용하여 데이터를 조회할 수 있는 강력한 기능을 제공합니다.
+
+### 기본 사용법
+
+Search API는 다음과 같은 요청 본문을 받습니다:
+
+```typescript
+interface RequestSearchDto {
+    select?: string[]; // 조회할 필드 목록
+    where?: Array<QueryFilter>; // 검색 조건
+    order?: Record<string, 'ASC' | 'DESC'>; // 정렬 조건
+    withDeleted?: boolean; // soft delete된 데이터 포함 여부
+    take?: number; // 조회할 데이터 개수 (cursor pagination)
+    limit?: number; // 조회할 데이터 개수 (offset pagination)
+    offset?: number; // 건너뛸 데이터 개수 (offset pagination)
+    nextCursor?: string; // 다음 페이지 커서 (cursor pagination)
+}
+```
+
+### where 조건 사용법
+
+`where` 조건은 배열 형태로 여러 조건을 AND 연산으로 결합할 수 있습니다.
+
+#### 기본 연산자
+
+다음과 같은 연산자를 사용할 수 있습니다:
+
+-   `=` : 같음
+-   `!=` : 같지 않음
+-   `>` : 보다 큼
+-   `>=` : 보다 크거나 같음
+-   `<` : 보다 작음
+-   `<=` : 보다 작거나 같음
+-   `LIKE` : 패턴 매칭 (대소문자 구분)
+-   `ILIKE` : 패턴 매칭 (대소문자 구분 안 함)
+-   `BETWEEN` : 범위 검색
+-   `IN` : 목록에 포함
+-   `NULL` : NULL 값 검색
+
+#### 기본 예시
+
+```json
+POST /users/search
+{
+  "where": [
+    { "username": { "operator": "LIKE", "operand": "john%" } },
+    { "email": { "operator": "=", "operand": "john@example.com" } }
+  ]
+}
+```
+
+#### NOT 연산자
+
+모든 연산자에 `not: true` 옵션을 추가하여 NOT 연산을 수행할 수 있습니다:
+
+```json
+{
+    "where": [{ "username": { "operator": "LIKE", "operand": "admin%", "not": true } }]
+}
+```
+
+#### BETWEEN 연산자
+
+```json
+{
+    "where": [{ "age": { "operator": "BETWEEN", "operand": [20, 30] } }]
+}
+```
+
+#### IN 연산자
+
+```json
+{
+    "where": [{ "status": { "operator": "IN", "operand": ["active", "pending"] } }]
+}
+```
+
+#### NULL 연산자
+
+```json
+{
+    "where": [{ "deletedAt": { "operator": "NULL" } }]
+}
+```
+
+### Relation 필드 검색
+
+관계(Relation) 엔티티의 필드를 검색 조건으로 사용할 수 있습니다.
+
+#### Entity 예시
+
+```typescript
+@Entity()
+export class Question extends BaseEntity {
+    @PrimaryGeneratedColumn()
+    id: number;
+
+    @Column()
+    title: string;
+
+    @ManyToOne(() => Category)
+    @JoinColumn({ name: 'categoryId' })
+    category: Category;
+
+    @ManyToOne(() => User)
+    @JoinColumn({ name: 'userId' })
+    user: User;
+}
+
+@Entity()
+export class Category extends BaseEntity {
+    @PrimaryGeneratedColumn()
+    id: number;
+
+    @Column()
+    name: string;
+}
+```
+
+#### Relation 필드 where 조건
+
+관계 엔티티의 필드를 검색하려면 `relationName.fieldName` 형식을 사용합니다:
+
+```json
+POST /questions/search
+{
+  "where": [
+    { "category.name": { "operator": "LIKE", "operand": "tech%" } },
+    { "user.email": { "operator": "=", "operand": "user@example.com" } }
+  ]
+}
+```
+
+이 경우 `category`와 `user` relation이 자동으로 join되어 검색됩니다.
+
+### select 사용법
+
+`select`를 사용하여 조회할 필드를 지정할 수 있습니다. 배열 형식으로 입력하면 내부적으로 TypeORM의 객체 형식으로 변환됩니다.
+
+#### 기본 사용법
+
+```json
+{
+    "select": ["id", "username", "email"],
+    "where": [{ "status": { "operator": "=", "operand": "active" } }]
+}
+```
+
+#### Relation 필드 select
+
+관계 엔티티의 필드도 선택할 수 있습니다:
+
+```json
+{
+    "select": ["id", "title", "category.id", "category.name", "user.id", "user.email"],
+    "where": [{ "title": { "operator": "LIKE", "operand": "question%" } }]
+}
+```
+
+내부적으로 다음과 같이 변환됩니다:
+
+```typescript
+{
+  id: true,
+  title: true,
+  category: {
+    id: true,
+    name: true
+  },
+  user: {
+    id: true,
+    email: true
+  }
+}
+```
+
+### order 사용법
+
+`order`를 사용하여 결과를 정렬할 수 있습니다.
+
+#### 기본 사용법
+
+```json
+{
+    "order": {
+        "createdAt": "DESC",
+        "id": "ASC"
+    }
+}
+```
+
+#### Relation 필드 order
+
+관계 엔티티의 필드로도 정렬할 수 있습니다:
+
+```json
+{
+    "order": {
+        "category.name": "ASC",
+        "createdAt": "DESC"
+    }
+}
+```
+
+### Pagination
+
+Search API는 두 가지 pagination 방식을 지원합니다: `cursor`와 `offset`.
+
+#### Cursor Pagination
+
+기본 pagination 방식입니다. `take`와 `nextCursor`를 사용합니다:
+
+```json
+// 첫 번째 요청
+{
+  "where": [{ "status": { "operator": "=", "operand": "active" } }],
+  "take": 20
+}
+
+// 응답
+{
+  "data": [...],
+  "metadata": {
+    "nextCursor": "eyJpZCI6MjB9",
+    "total": 100
+  }
+}
+
+// 다음 페이지 요청
+{
+  "nextCursor": "eyJpZCI6MjB9"
+}
+```
+
+#### Offset Pagination
+
+`limit`과 `offset`을 사용하는 전통적인 pagination 방식입니다:
+
+```json
+{
+    "where": [{ "status": { "operator": "=", "operand": "active" } }],
+    "limit": 20,
+    "offset": 0
+}
+```
+
+pagination 방식을 변경하려면 route 옵션에서 설정할 수 있습니다:
+
+```typescript
+@Crud({
+    entity: User,
+    routes: {
+        search: { paginationType: PaginationType.OFFSET },
+    },
+})
+```
+
+### 전체 예시
+
+다음은 relation 필드를 사용한 복잡한 검색 예시입니다:
+
+```json
+POST /questions/search
+{
+  "select": ["id", "title", "category.id", "category.name", "user.id", "user.email"],
+  "where": [
+    { "category.name": { "operator": "LIKE", "operand": "tech%" } },
+    { "user.status": { "operator": "=", "operand": "active" } },
+    { "createdAt": { "operator": ">=", "operand": "2024-01-01" } }
+  ],
+  "order": {
+    "category.name": "ASC",
+    "createdAt": "DESC"
+  },
+  "take": 20
+}
+```
+
+이 요청은:
+
+-   `category.name`이 "tech"로 시작하는
+-   `user.status`가 "active"인
+-   2024년 1월 1일 이후 생성된
+-   질문들을 조회하며
+-   `category.name`으로 오름차순, 그 다음 `createdAt`으로 내림차순 정렬합니다.
+
 #### `CREATE`
 
 ```typescript
